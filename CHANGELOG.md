@@ -1,4 +1,17 @@
 <!-- Do not manually edit this file. Use the `changelogger` tool. -->
+December 1st, 2025
+==================
+**New this release:**
+- :tada: (client, @annahay) Added methods in token bucket to indicate if bucket is full or empty
+- :bug: (all, @arielby) Publish an MSRV for all packages
+
+
+**Contributors**
+Thank you for your contributions! ❤
+- @annahay
+- @arielby
+
+
 November 20th, 2025
 ===================
 **New this release:**
