@@ -1,0 +1,110 @@
+# Merge-queue gate experiment.
+#   - pull_request: runs the "full matrix" on every push (~90s of sleeps, 3 shards)
+#   - merge_group:  runs a gate that prints the payload and decides whether to
+#                   skip the full matrix based on whether the queue's head_sha
+#                   already has a green github-actions check-suite.
+#
+# The point: prove we can avoid a redundant re-run at merge time when the PR
+# is already rebased and nothing is queued ahead of it.
+#
+# For merge queue to fire this workflow, it must live on the default branch.
+name: MQ CI
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+
+concurrency:
+  group: mq-ci-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: read
+
+jobs:
+  # Runs only under merge_group. Decides whether to skip the full matrix.
+  gate:
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const mg = context.payload.merge_group;
+            core.notice(`merge_group base_sha=${mg.base_sha} head_sha=${mg.head_sha} head_ref=${mg.head_ref}`);
+            core.info(`Full merge_group payload:\n${JSON.stringify(mg, null, 2)}`);
+
+            // Inspect the merge commit's parents. For a single-PR queue this
+            // is typically [base_sha, pr_head_sha]. Anything ahead in the
+            // queue changes this shape.
+            const {data: headCommit} = await github.rest.repos.getCommit({
+              owner: context.repo.owner, repo: context.repo.repo, ref: mg.head_sha,
+            });
+            const parents = headCommit.parents.map(p => p.sha);
+            core.notice(`head_sha parents: ${JSON.stringify(parents)}`);
+
+            // Pick a candidate PR head SHA to check against: the last parent
+            // that isn't the base_sha. If we can't find one, don't skip.
+            const candidate = parents.reverse().find(p => p !== mg.base_sha);
+            if (!candidate) {
+              core.notice('No non-base parent found — running full matrix');
+              core.setOutput('skip', 'false');
+              return;
+            }
+            core.notice(`Checking check-suites on candidate PR head ${candidate}`);
+            const {data: suites} = await github.rest.checks.listSuitesForRef({
+              owner: context.repo.owner, repo: context.repo.repo, ref: candidate,
+            });
+            const relevant = suites.check_suites.filter(
+              s => s.app && s.app.slug === 'github-actions'
+            );
+            core.info(`github-actions check-suites: ${JSON.stringify(
+              relevant.map(s => ({id: s.id, status: s.status, conclusion: s.conclusion})),
+              null, 2
+            )}`);
+            const hasGreen = relevant.some(s => s.conclusion === 'success');
+            if (hasGreen) {
+              core.notice(`Candidate ${candidate} has green github-actions checks — skipping full matrix`);
+              core.setOutput('skip', 'true');
+            } else {
+              core.notice(`Candidate ${candidate} has no green github-actions checks yet — running full matrix`);
+              core.setOutput('skip', 'false');
+            }
+
+  # The "full matrix" — 3 shards, each sleeps 30s. Simulates a heavy suite.
+  matrix:
+    needs: [gate]
+    if: |
+      always() && (
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'merge_group' && needs.gate.outputs.skip != 'true')
+      )
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - run: |
+          echo "shard=${{ matrix.shard }} event=${{ github.event_name }}"
+          sleep 30
+
+  # Rollup — this is the single required check for merge queue.
+  success:
+    needs: [gate, matrix]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          gate="${{ needs.gate.result }}"
+          matrix="${{ needs.matrix.result }}"
+          echo "gate=$gate matrix=$matrix event=${{ github.event_name }}"
+          # matrix skipped by gate is OK; failure/cancellation is not
+          if [ "$matrix" = "failure" ] || [ "$matrix" = "cancelled" ]; then
+            echo "matrix failed"; exit 1
+          fi
