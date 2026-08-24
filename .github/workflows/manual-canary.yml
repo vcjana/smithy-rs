@@ -90,7 +90,7 @@ jobs:
     needs:
     - acquire-base-image
     - get-pr-info
-    runs-on: smithy_ubuntu-latest_8-core
+    runs-on: ubuntu-latest
     steps:
     - uses: GitHubSecurityLab/actions-permissions/monitor@v1
     - uses: actions/checkout@v4
@@ -107,7 +107,7 @@ jobs:
     needs:
     - generate
     - get-pr-info
-    runs-on: smithy_ubuntu-latest_8-core
+    runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
